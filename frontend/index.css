@@ -1,0 +1,5 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root{--bg:#f8fafc;--border:rgba(15,23,42,.13);--text:#0f172a;--text-muted:#64748b;--accent:#ea580c;--success:#15803d;--danger:#b91c1c}
+body{margin:0;font-family:'Space Mono',monospace;background:var(--bg);color:var(--text);min-height:100vh}.font-display{font-family:'Orbitron',sans-serif}
