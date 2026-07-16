@@ -2,3 +2,5 @@ contracts/cache/
 contracts/out/
 frontend/dist/
 frontend/node_modules/
+.vercel
+.env.local
