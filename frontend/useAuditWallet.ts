@@ -4,7 +4,7 @@ import { auditConfig } from "./config";
 
 type Eth = { request(a:{method:string;params?:unknown[]}):Promise<unknown>; on?(e:string,cb:(...a:unknown[])=>void):void; removeListener?(e:string,cb:(...a:unknown[])=>void):void };
 const eth = () => (window as unknown as {ethereum?:Eth}).ethereum;
-const chain = { chainId:"0x14a34", chainName:"Base Sepolia", nativeCurrency:{name:"Ether",symbol:"ETH",decimals:18}, rpcUrls:[auditConfig.rpcUrl], blockExplorerUrls:[auditConfig.explorer] };
+const chain = { chainId:`0x${auditConfig.chainId.toString(16)}`, chainName:auditConfig.chainName, nativeCurrency:{name:"Ether",symbol:"ETH",decimals:18}, rpcUrls:[auditConfig.rpcUrl], blockExplorerUrls:[auditConfig.explorer] };
 
 export function useAuditWallet() {
   const [signer,setSigner]=useState<JsonRpcSigner|null>(null);

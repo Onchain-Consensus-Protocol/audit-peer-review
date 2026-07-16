@@ -17,6 +17,17 @@ contract AuditReviewTestToken is ERC20 {
     }
 }
 
+contract FeeAuditReviewTestToken is AuditReviewTestToken {
+    function _update(address from, address to, uint256 value) internal override {
+        if (from != address(0) && to != address(0) && value > 1) {
+            super._update(from, to, value - 1);
+            super._update(from, address(0), 1);
+        } else {
+            super._update(from, to, value);
+        }
+    }
+}
+
 contract AuditReviewVaultTest is Test {
     AuditReviewTestToken internal token;
     AuditReviewVault internal vault;
@@ -53,6 +64,17 @@ contract AuditReviewVaultTest is Test {
         _approve(user);
         vm.prank(user);
         vault.stakeWithReview(side, amount, _review(200));
+    }
+
+    function _newVault() internal returns (AuditReviewVault fresh) {
+        fresh = new AuditReviewVault(address(this), address(token), block.timestamp + 1 days, MIN);
+    }
+
+    function _firstStakeOn(AuditReviewVault target, address user, IAuditReviewVault.Side side, uint256 amount) internal {
+        vm.prank(user);
+        token.approve(address(target), type(uint256).max);
+        vm.prank(user);
+        target.stakeWithReview(side, amount, _review(200));
     }
 
     function test_firstStakeStoresImmutableReviewIdentityAndEmitsBody() public {
@@ -192,5 +214,189 @@ contract AuditReviewVaultTest is Test {
         vm.warp(vault.resolutionTime());
         vault.finalize();
         assertEq(uint256(vault.outcome()), uint256(IAuditReviewVault.Outcome.INVALID));
+    }
+
+    function test_feeOnTransferStakeRevertsWithoutAccounting() public {
+        FeeAuditReviewTestToken feeToken = new FeeAuditReviewTestToken();
+        AuditReviewVault feeVault =
+            new AuditReviewVault(address(this), address(feeToken), block.timestamp + 1 days, MIN);
+        feeToken.mint(alice, 10 * USDC);
+        vm.prank(alice);
+        feeToken.approve(address(feeVault), type(uint256).max);
+
+        vm.prank(alice);
+        vm.expectRevert("Unexpected token transfer");
+        feeVault.stakeWithReview(IAuditReviewVault.Side.YES, MIN, _review(200));
+        assertFalse(feeVault.hasReview(alice));
+        assertEq(feeVault.totalPrincipal(), 0);
+        assertEq(feeToken.balanceOf(address(feeVault)), 0);
+    }
+
+    function test_preFinalizeSurplusIsConservedInsideSettlementSnapshot() public {
+        _firstStake(alice, IAuditReviewVault.Side.YES, USDC);
+        _firstStake(bob, IAuditReviewVault.Side.YES, USDC);
+        _firstStake(carol, IAuditReviewVault.Side.NO, USDC);
+        vm.prank(carol);
+        token.transfer(address(vault), 1);
+
+        vm.warp(vault.resolutionTime());
+        vault.finalize();
+        assertEq(vault.settlementPool(), 3 * USDC + 1);
+
+        uint256 beforeAlice = token.balanceOf(alice);
+        vm.prank(alice);
+        vault.withdraw();
+        assertEq(token.balanceOf(alice) - beforeAlice, 1_500_000);
+
+        uint256 beforeBob = token.balanceOf(bob);
+        vm.prank(bob);
+        vault.withdraw();
+        assertEq(token.balanceOf(bob) - beforeBob, 1_500_001);
+        assertEq(vault.totalPaid(), vault.settlementPool());
+        assertEq(token.balanceOf(address(vault)), 0);
+    }
+
+    function test_postFinalizeTransferCannotChangePayoutSnapshot() public {
+        _firstStake(alice, IAuditReviewVault.Side.YES, USDC);
+        _firstStake(bob, IAuditReviewVault.Side.YES, USDC);
+        _firstStake(carol, IAuditReviewVault.Side.NO, USDC);
+        vm.warp(vault.resolutionTime());
+        vault.finalize();
+        uint256 snapshot = vault.settlementPool();
+
+        vm.prank(alice);
+        vault.withdraw();
+        uint256 bobBefore = token.balanceOf(bob);
+        uint256 alicePayout = vault.totalPaid();
+        vm.prank(carol);
+        token.transfer(address(vault), 7);
+        vm.prank(bob);
+        vault.withdraw();
+
+        assertEq(vault.totalPaid(), snapshot);
+        assertEq(alicePayout + token.balanceOf(bob) - bobBefore, snapshot);
+        assertEq(token.balanceOf(address(vault)), 7);
+        assertEq(vault.remainingEligibleClaims(), 0);
+    }
+
+    function test_loserWithdrawDoesNotConsumeSettlementPool() public {
+        _firstStake(alice, IAuditReviewVault.Side.YES, 2 * USDC);
+        _firstStake(bob, IAuditReviewVault.Side.NO, USDC);
+        vm.warp(vault.resolutionTime());
+        vault.finalize();
+        uint256 remaining = vault.remainingEligibleClaims();
+
+        uint256 beforeBob = token.balanceOf(bob);
+        vm.prank(bob);
+        vault.withdraw();
+        assertEq(token.balanceOf(bob), beforeBob);
+        assertEq(vault.totalPaid(), 0);
+        assertEq(vault.remainingEligibleClaims(), remaining);
+
+        vm.prank(bob);
+        vm.expectRevert("Already claimed");
+        vault.withdraw();
+    }
+
+    function test_claimOrderMovesOnlyDustAndAlwaysConservesPool() public {
+        AuditReviewVault first = _newVault();
+        AuditReviewVault second = _newVault();
+        _firstStakeOn(first, alice, IAuditReviewVault.Side.YES, 1_000_000);
+        _firstStakeOn(first, bob, IAuditReviewVault.Side.YES, 1_000_001);
+        _firstStakeOn(first, carol, IAuditReviewVault.Side.NO, 1_000_000);
+        _firstStakeOn(second, alice, IAuditReviewVault.Side.YES, 1_000_000);
+        _firstStakeOn(second, bob, IAuditReviewVault.Side.YES, 1_000_001);
+        _firstStakeOn(second, carol, IAuditReviewVault.Side.NO, 1_000_000);
+        vm.warp(first.resolutionTime());
+        first.finalize();
+        second.finalize();
+
+        uint256 aliceBefore = token.balanceOf(alice);
+        vm.prank(alice);
+        first.withdraw();
+        uint256 aliceFirst = token.balanceOf(alice) - aliceBefore;
+        uint256 bobBefore = token.balanceOf(bob);
+        vm.prank(bob);
+        first.withdraw();
+        uint256 bobLast = token.balanceOf(bob) - bobBefore;
+        assertEq(aliceFirst, 1_499_999);
+        assertEq(bobLast, 1_500_002);
+
+        bobBefore = token.balanceOf(bob);
+        vm.prank(bob);
+        second.withdraw();
+        uint256 bobFirst = token.balanceOf(bob) - bobBefore;
+        aliceBefore = token.balanceOf(alice);
+        vm.prank(alice);
+        second.withdraw();
+        uint256 aliceLast = token.balanceOf(alice) - aliceBefore;
+        assertEq(bobFirst, 1_500_001);
+        assertEq(aliceLast, 1_500_000);
+        assertEq(first.totalPaid(), first.settlementPool());
+        assertEq(second.totalPaid(), second.settlementPool());
+    }
+
+    function test_invalidRefundsAllAccountsAndSurplusDust() public {
+        _firstStake(alice, IAuditReviewVault.Side.YES, USDC);
+        _firstStake(bob, IAuditReviewVault.Side.NO, USDC);
+        _firstStake(carol, IAuditReviewVault.Side.INVALID, USDC);
+        vm.prank(alice);
+        token.transfer(address(vault), 1);
+        vm.warp(vault.resolutionTime());
+        vault.finalize();
+        assertEq(uint256(vault.outcome()), uint256(IAuditReviewVault.Outcome.INVALID));
+
+        uint256 aliceBefore = token.balanceOf(alice);
+        vm.prank(alice);
+        vault.withdraw();
+        assertEq(token.balanceOf(alice) - aliceBefore, USDC);
+        uint256 bobBefore = token.balanceOf(bob);
+        vm.prank(bob);
+        vault.withdraw();
+        assertEq(token.balanceOf(bob) - bobBefore, USDC);
+        uint256 carolBefore = token.balanceOf(carol);
+        vm.prank(carol);
+        vault.withdraw();
+        assertEq(token.balanceOf(carol) - carolBefore, USDC + 1);
+        assertEq(vault.totalPaid(), vault.settlementPool());
+    }
+
+    function testFuzz_standardTokenSettlementConservesSnapshot(
+        uint96 aliceRaw,
+        uint96 bobRaw,
+        uint96 loserRaw,
+        uint16 preSurplus,
+        uint16 postSurplus,
+        bool aliceFirst
+    ) public {
+        uint256 aliceStake = bound(uint256(aliceRaw), USDC, 1_000 * USDC);
+        uint256 bobStake = bound(uint256(bobRaw), USDC, 1_000 * USDC);
+        uint256 loserStake = bound(uint256(loserRaw), USDC, aliceStake + bobStake - 1);
+        _firstStake(alice, IAuditReviewVault.Side.YES, aliceStake);
+        _firstStake(bob, IAuditReviewVault.Side.YES, bobStake);
+        _firstStake(carol, IAuditReviewVault.Side.NO, loserStake);
+        vm.prank(carol);
+        token.transfer(address(vault), preSurplus);
+        vm.warp(vault.resolutionTime());
+        vault.finalize();
+        uint256 snapshot = vault.settlementPool();
+
+        address first = aliceFirst ? alice : bob;
+        address last = aliceFirst ? bob : alice;
+        uint256 beforeFirst = token.balanceOf(first);
+        vm.prank(first);
+        vault.withdraw();
+        uint256 paidFirst = token.balanceOf(first) - beforeFirst;
+        vm.prank(carol);
+        token.transfer(address(vault), postSurplus);
+        uint256 beforeLast = token.balanceOf(last);
+        vm.prank(last);
+        vault.withdraw();
+        uint256 paidLast = token.balanceOf(last) - beforeLast;
+
+        assertLe(vault.totalPaid(), snapshot);
+        assertEq(paidFirst + paidLast, snapshot);
+        assertEq(vault.totalPaid(), snapshot);
+        assertEq(token.balanceOf(address(vault)), postSurplus);
     }
 }

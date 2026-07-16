@@ -1,0 +1,19 @@
+{
+  "network": "Base",
+  "chainId": 8453,
+  "deployer": "0x1556a9A5C01ecc4eF11e751CacC847DD36971be7",
+  "factory": "0xaaC1107E6FebDbA424A3477DfEEe9D8d3A58cBB7",
+  "factoryRuntimeCodeHash": "0xc5651f486c9f9af8c4156c7b03259ec1c0a586e879bf6329d7894c58a0ffd4e0",
+  "factoryVersion": 2,
+  "officialStakeToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "minStake": "1000000",
+  "minCreatorNoStake": "10000000",
+  "deploymentTransaction": "0x8c9d9a35600c1668b59a5f8a51386900ddb5ab7807d2fdf1de5ab67a96d2284e",
+  "deploymentBlock": 48697158,
+  "compiler": "0.8.20",
+  "optimizer": true,
+  "optimizerRuns": 200,
+  "viaIR": true,
+  "sourceVerified": true,
+  "explorer": "https://basescan.org/address/0xaaC1107E6FebDbA424A3477DfEEe9D8d3A58cBB7"
+}

@@ -33,11 +33,15 @@ interface IAuditReviewVault {
     function stakeOf(address user) external view returns (uint256 yes, uint256 no, uint256 invalid);
     function sideOf(address user) external view returns (Side side, bool hasPosition);
     function hasReview(address reviewer) external view returns (bool);
+    function claimed(address user) external view returns (bool);
     function reviewHashOf(address reviewer) external view returns (bytes32);
     function reviewSideOf(address reviewer) external view returns (Side side);
     function resolved() external view returns (bool);
     function outcome() external view returns (Outcome);
     function canResolve() external view returns (bool);
+    function settlementPool() external view returns (uint256);
+    function remainingEligibleClaims() external view returns (uint256);
+    function totalPaid() external view returns (uint256);
 
     function stake(Side side, uint256 amount) external;
     function stakeWithReview(Side side, uint256 amount, string calldata review) external;

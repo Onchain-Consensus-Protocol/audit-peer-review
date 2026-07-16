@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { Contract, formatUnits, Interface, JsonRpcProvider, parseUnits } from "ethers";
+import { Contract, formatUnits, getAddress, Interface, JsonRpcProvider, keccak256, parseUnits, type JsonRpcSigner } from "ethers";
 import { ExternalLink, FileSearch, Loader2, RefreshCw, Shield } from "lucide-react";
 import "./index.css";
 import { Button } from "./components/Button";
@@ -37,7 +37,8 @@ const copy = {
   en: {
     createTitle: "Open an audit dispute vault",
     subtitle:
-      "Permissionless · Base Sepolia · Creation atomically posts the creator's NO review and at least 10 test USDC. Deadline only needs to be in the future.",
+      "Permissionless · Base mainnet · Creation atomically posts the creator's NO review and at least 10 real USDC. The creator chooses any future deadline.",
+    risk: "This is a capital-weighted public dispute signal, not a technical audit verdict. The creator's NO position is locked until settlement and can lose its full principal.",
     auditUrl: "Public audit URL",
     loadFindings: "Load findings",
     formatsHelp: "Which report formats are supported?",
@@ -45,7 +46,7 @@ const copy = {
     formatsPdf: "PDF: ChainGPT text-based reports with FND-, Severity, Description, Impact, and Remediation sections. Scanned/image-only PDFs are not supported.",
     formatsText: "Markdown or plain text: numbered level 2–4 headings, such as ## Finding 1: Reentrancy or ### Issue #2 - Access Control.",
     formatsLimits: "Limits: PDF up to 20 MB and 250 pages; text up to 2 MB. Other PDF layouts may require entering the disputed finding manually.",
-    reportHash: "PDF SHA-256",
+    reportHash: "Report SHA-256",
     findingsFound: (n: number) => `${n} findings detected. Select the disputed one.`,
     findingLabel: "Finding label",
     disputedFinding: "Disputed finding",
@@ -54,7 +55,7 @@ const copy = {
     invalidRule: "INVALID rule",
     creatorReview: "Creator NO review (public onchain)",
     minReview: "minimum 200",
-    initialNo: "Initial NO stake (test USDC)",
+    initialNo: "Initial NO stake (real USDC)",
     deadline: "Deadline",
     settlementRule:
       "Settlement rule: YES or NO wins only when that side is strictly above 50% of total principal. The winning side shares the losing-side funds pro rata by stake. If neither YES nor NO is above 50%, the result is INVALID and principal is refunded pro rata.",
@@ -73,8 +74,8 @@ const copy = {
       reviewSize: "Creator NO review must be 200-4096 bytes.",
       minStake: "Creator must initially stake at least 10 USDC on NO.",
       future: "Deadline must be later than now.",
-      wrongChain: "Please switch to Base Sepolia.",
-      noUsdc: "Insufficient test USDC balance.",
+      wrongChain: "Please switch to Base.",
+      noUsdc: "Insufficient USDC balance.",
       txFailed: "Create transaction failed.",
       badProtocol: "Only HTTPS or ipfs:// Audit URL is allowed",
       tooLargeText: "Text report is larger than 2 MB and cannot be parsed automatically",
@@ -88,7 +89,8 @@ const copy = {
   zh: {
     createTitle: "开启审计争议 Vault",
     subtitle:
-      "Permissionless · Base Sepolia · 创建交易原子提交 NO Review 并初押至少 10 测试 USDC。截止时间只要求晚于当前时间。",
+      "Permissionless · Base 主网 · 创建交易原子提交 NO Review 并初押至少 10 枚真实 USDC；创建者可自行选择任意未来截止时间。",
+    risk: "这是资金加权的公开争议信号，不是技术审计结论。创建者的 NO 仓位在结算前无法退出，并可能损失全部本金。",
     auditUrl: "公开 Audit URL",
     loadFindings: "读取 Findings",
     formatsHelp: "可以解析哪些审计文档？",
@@ -96,7 +98,7 @@ const copy = {
     formatsPdf: "PDF：带文字层的 ChainGPT 报告，Finding 需包含 FND-、Severity、Description、Impact 和 Remediation 分段；不支持扫描件或纯图片 PDF。",
     formatsText: "Markdown 或纯文本：使用二至四级编号标题，例如 ## Finding 1: Reentrancy 或 ### Issue #2 - Access Control。",
     formatsLimits: "限制：PDF 最大 20 MB、250 页；文本最大 2 MB。其他 PDF 版式可能需要手动填写争议 Finding。",
-    reportHash: "PDF SHA-256",
+    reportHash: "报告 SHA-256",
     findingsFound: (n: number) => `已识别 ${n} 个 Findings，请选择争议项`,
     findingLabel: "Finding 标识",
     disputedFinding: "争议 Finding",
@@ -105,7 +107,7 @@ const copy = {
     invalidRule: "INVALID 规则",
     creatorReview: "创建者 NO Review（链上公开）",
     minReview: "最低 200",
-    initialNo: "初押 NO（测试 USDC）",
+    initialNo: "初押 NO（真实 USDC）",
     deadline: "截止时间",
     settlementRule:
       "结算规则：YES 或 NO 必须严格超过总本金 50% 才获胜；胜方按各自质押本金比例分取输方资金。若 YES 和 NO 都没有超过 50%，结果为 INVALID，本金按比例退款。",
@@ -124,8 +126,8 @@ const copy = {
       reviewSize: "创建者 NO Review 必须为 200–4096 bytes。",
       minStake: "创建者必须初押至少 10 USDC 到 NO。",
       future: "截止时间必须晚于当前时间。",
-      wrongChain: "请切换到 Base Sepolia",
-      noUsdc: "测试 USDC 余额不足。",
+      wrongChain: "请切换到 Base 主网",
+      noUsdc: "USDC 余额不足。",
       txFailed: "创建交易失败",
       badProtocol: "只允许 HTTPS 或 ipfs:// Audit URL",
       tooLargeText: "文本报告超过 2 MB，不能自动解析",
@@ -208,6 +210,43 @@ async function readLimitedResponse(response: Response, maxBytes: number, tooLarg
     offset += chunk.byteLength;
   }
   return data;
+}
+
+async function assertTrustedFactoryForSigning(signer: JsonRpcSigner) {
+  const provider = signer.provider;
+  const factoryAddress = getAddress(auditConfig.factoryAddress);
+  const tokenAddress = getAddress(auditConfig.usdcAddress);
+  const [network, factoryCode, tokenCode] = await Promise.all([
+    provider.getNetwork(),
+    provider.getCode(factoryAddress),
+    provider.getCode(tokenAddress),
+  ]);
+  if (Number(network.chainId) !== auditConfig.chainId) throw new Error(`Please switch to ${auditConfig.chainName}.`);
+  if (factoryCode === "0x" || tokenCode === "0x") throw new Error("Wallet-side contract code verification failed.");
+  if (!/^0x[0-9a-f]{64}$/i.test(auditConfig.factoryCodeHash) || keccak256(factoryCode).toLowerCase() !== auditConfig.factoryCodeHash.toLowerCase()) {
+    throw new Error("Factory runtime code does not match the published deployment manifest.");
+  }
+
+  const factory = new Contract(factoryAddress, FACTORY_ABI, provider);
+  const token = new Contract(tokenAddress, ERC20_ABI, provider);
+  const [officialToken, minStake, minCreatorNoStake, version, decimals, symbol] = await Promise.all([
+    factory.officialStakeToken(),
+    factory.minStake(),
+    factory.minCreatorNoStake(),
+    factory.auditReviewFactoryVersion(),
+    token.decimals(),
+    token.symbol(),
+  ]);
+  if (
+    getAddress(String(officialToken)) !== tokenAddress
+    || BigInt(version) !== 2n
+    || Number(decimals) !== 6
+    || String(symbol) !== "USDC"
+    || BigInt(minStake) <= 0n
+    || BigInt(minStake) !== auditConfig.minStake
+    || BigInt(minCreatorNoStake) !== auditConfig.minCreatorNoStake
+  ) throw new Error("Wallet-side Factory or USDC verification failed. No approval was sent.");
+  return { minCreatorNoStake: BigInt(minCreatorNoStake) };
 }
 
 function App() {
@@ -313,6 +352,7 @@ function App() {
         return;
       } else {
         const data = await readLimitedResponse(response, MAX_TEXT_AUDIT_BYTES, t.errors.tooLargeText);
+        setReportHash(await sha256Hex(data));
         parsed = parseFindings(new TextDecoder("utf-8", { fatal: false }).decode(data));
       }
       if (!parsed.length) throw new Error(t.errors.noFindings);
@@ -342,6 +382,7 @@ function App() {
       return setError(t.errors.badUrl);
     }
     if (!finding.trim()) return setError(t.errors.noFinding);
+    if (!/^0x[0-9a-f]{64}$/i.test(reportHash)) return setError("Load the public report first so its SHA-256 can be bound onchain.");
     if (bytes(review) < 200 || bytes(review) > 4096) return setError(t.errors.reviewSize);
     const amount = parseUnits(stake, 6);
     if (amount < 10_000_000n) return setError(t.errors.minStake);
@@ -351,10 +392,10 @@ function App() {
 
     setBusy(true);
     try {
-      const network = await wallet.signer.provider.getNetwork();
-      if (Number(network.chainId) !== auditConfig.chainId) throw new Error(t.errors.wrongChain);
+      const trusted = await assertTrustedFactoryForSigning(wallet.signer);
       const token = new Contract(auditConfig.usdcAddress, ERC20_ABI, wallet.signer);
       const factory = new Contract(auditConfig.factoryAddress, FACTORY_ABI, wallet.signer);
+      if (amount < trusted.minCreatorNoStake) throw new Error(t.errors.minStake);
       const owner = await wallet.signer.getAddress();
       const balance: bigint = await token.balanceOf(owner);
       if (balance < amount) throw new Error(t.errors.noUsdc);
@@ -365,6 +406,7 @@ function App() {
       }
       const tx = await factory.createDispute({
         auditUrl: auditUrl.trim(),
+        auditHash: reportHash,
         findingLabel: label.trim(),
         finding: finding.trim(),
         yesRule: yesRule.trim(),
@@ -416,6 +458,7 @@ function App() {
       <main className="mx-auto max-w-4xl px-5 py-10">
         <h1 className="font-display text-3xl font-bold">{t.createTitle}</h1>
         <p className="mt-3 text-sm text-slate-600">{t.subtitle}</p>
+        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{t.risk}</p>
         <section className="mt-7 space-y-5 rounded-2xl border bg-white p-6 shadow-sm">
           <Field label={t.auditUrl}>
             <div className="flex flex-col gap-2 sm:flex-row">
