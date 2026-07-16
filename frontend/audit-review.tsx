@@ -45,7 +45,6 @@ const copy = {
     formatsPdf: "PDF: ChainGPT text-based reports with FND-, Severity, Description, Impact, and Remediation sections. Scanned/image-only PDFs are not supported.",
     formatsText: "Markdown or plain text: numbered level 2–4 headings, such as ## Finding 1: Reentrancy or ### Issue #2 - Access Control.",
     formatsLimits: "Limits: PDF up to 20 MB and 250 pages; text up to 2 MB. Other PDF layouts may require entering the disputed finding manually.",
-    authorizedReport: "Import only a public report that you are authorized to share. Private ChainGPT customer reports may have disclosure restrictions.",
     reportHash: "PDF SHA-256",
     findingsFound: (n: number) => `${n} findings detected. Select the disputed one.`,
     findingLabel: "Finding label",
@@ -97,7 +96,6 @@ const copy = {
     formatsPdf: "PDF：带文字层的 ChainGPT 报告，Finding 需包含 FND-、Severity、Description、Impact 和 Remediation 分段；不支持扫描件或纯图片 PDF。",
     formatsText: "Markdown 或纯文本：使用二至四级编号标题，例如 ## Finding 1: Reentrancy 或 ### Issue #2 - Access Control。",
     formatsLimits: "限制：PDF 最大 20 MB、250 页；文本最大 2 MB。其他 PDF 版式可能需要手动填写争议 Finding。",
-    authorizedReport: "只导入公开且你有权分享的报告。ChainGPT 客户的私有报告可能受披露限制。",
     reportHash: "PDF SHA-256",
     findingsFound: (n: number) => `已识别 ${n} 个 Findings，请选择争议项`,
     findingLabel: "Finding 标识",
@@ -439,7 +437,6 @@ function App() {
               <li>{t.formatsLimits}</li>
             </ul>
           </details>
-          <div className="rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">{t.authorizedReport}</div>
           {reportHash && <div className="break-all rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800"><b>{t.reportHash}:</b> <code>{reportHash}</code></div>}
           {loadError && <div className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">{loadError}</div>}
           {options.length > 0 && (
