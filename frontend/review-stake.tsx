@@ -75,9 +75,13 @@ const copy = {
     hideFinding: "Hide full finding",
     distribution: "Vault distribution",
     totalPrincipal: "Total principal",
-    currentOutcome: "Current result",
+    sideMeanings: ["Finding is valid", "Finding is not valid", "Cannot adjudicate reliably"],
+    provisionalOutcome: "Provisional outcome (not finalized)",
+    finalOutcome: "Final outcome",
     rule:
-      "Resolution rule: YES or NO wins only when that side is strictly above 50% of total principal. The winning side shares the losing-side funds pro rata by stake. If neither YES nor NO is above 50%, the result is INVALID and principal is refunded pro rata.",
+      "Resolution rule: YES or NO wins only when that side is strictly above 50% of total principal. The winning side shares the losing-side funds pro rata by stake.",
+    invalidNote:
+      "INVALID is both an active position and the fallback outcome. If neither YES nor NO is strictly above 50%, the Vault resolves INVALID and every participant recovers the settlement pool pro rata by principal.",
     addStake: (side: string) => `Add ${side} stake`,
     submitStake: "Submit Review + Stake",
     reviewPlaceholder: "200-4096 bytes of verifiable review reasoning",
@@ -104,9 +108,13 @@ const copy = {
     hideFinding: "收起完整 Finding",
     distribution: "Vault 质押分布",
     totalPrincipal: "总本金",
-    currentOutcome: "按当前本金",
+    sideMeanings: ["Finding 成立", "Finding 不成立", "无法可靠裁决"],
+    provisionalOutcome: "暂定结果（尚未终局）",
+    finalOutcome: "最终结果",
     rule:
-      "结算规则：YES 或 NO 必须严格超过总本金 50% 才获胜；胜方按各自质押本金比例分取输方资金。若 YES 和 NO 都没有超过 50%，结果为 INVALID，本金按比例退款。",
+      "结算规则：YES 或 NO 必须严格超过总本金 50% 才获胜；胜方按各自质押本金比例分取输方资金。",
+    invalidNote:
+      "INVALID 既是可主动质押的立场，也是默认熄断结果。若 YES 和 NO 都未严格超过 50%，Vault 终局为 INVALID，所有参与者按本金比例取回结算池。",
     addStake: (side: string) => `追加 ${side} 资金`,
     submitStake: "提交 Review + Stake",
     reviewPlaceholder: "200–4096 bytes 的可核验审查理由",
@@ -134,7 +142,7 @@ function App() {
   const vaultParam = new URLSearchParams(location.search).get("vault") || "";
   const [vaultAddress, setVaultAddress] = useState("");
   const [meta, setMeta] = useState<any>(null);
-  const [showFinding, setShowFinding] = useState(false);
+  const [showFinding, setShowFinding] = useState(true);
   const [totals, setTotals] = useState<bigint[]>([0n, 0n, 0n]);
   const [deadline, setDeadline] = useState(0);
   const [resolved, setResolved] = useState(false);
@@ -242,6 +250,8 @@ function App() {
   const total = totals.reduce((a, b) => a + b, 0n);
   const pct = (v: bigint) => (total ? Number((v * 1000n) / total) / 10 : 0);
   const currentOutcome = totals[0] > total - totals[0] ? "YES" : totals[1] > total - totals[1] ? "NO" : "INVALID";
+  const displayedOutcome = resolved ? names[outcome - 1] || "INVALID" : currentOutcome;
+  const sideRules = meta ? [String(meta.yesRule), String(meta.noRule), String(meta.invalidRule)] : [];
 
   async function transact(kind: "stake" | "finalize" | "withdraw") {
     if (!wallet.signer) {
@@ -330,15 +340,20 @@ function App() {
               </div>
               <div className="mt-4 grid grid-cols-3 gap-3">
                 {totals.map((v, i) => (
-                  <div className="rounded-xl border p-4" key={i}>
+                  <div className="flex min-h-44 flex-col rounded-xl border p-4" key={i}>
                     <b>{names[i]}</b>
                     <div className="mt-2 text-2xl font-bold">{pct(v)}%</div>
                     <small>{formatUnits(v, 6)} USDC</small>
+                    <div className="mt-4 border-t pt-3 text-xs font-semibold text-slate-900">{t.sideMeanings[i]}</div>
+                    <p className="mt-1 text-xs leading-5 text-slate-600">{sideRules[i]}</p>
                   </div>
                 ))}
               </div>
               <p className="mt-4 text-xs leading-5 text-slate-600">{t.rule}</p>
-              <p className="mt-2 text-xs text-slate-500">{t.currentOutcome}: {currentOutcome}</p>
+              <p className="mt-2 text-xs leading-5 text-slate-600">{t.invalidNote}</p>
+              <p className="mt-3 text-sm font-semibold text-slate-800">
+                {resolved ? t.finalOutcome : t.provisionalOutcome}: {displayedOutcome}
+              </p>
             </section>
             <div className="mt-6 grid items-start gap-6 lg:grid-cols-[.8fr_1.2fr]">
               <section className="rounded-2xl border bg-white p-6">
