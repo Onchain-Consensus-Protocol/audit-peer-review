@@ -30,6 +30,7 @@ export const FACTORY_ABI = [
 ] as const;
 
 export const VAULT_ABI = [
+  "function auditReviewVersion() view returns (uint256)",
   "function factory() view returns (address)",
   "function stakeToken() view returns (address)",
   "function resolutionTime() view returns (uint256)",

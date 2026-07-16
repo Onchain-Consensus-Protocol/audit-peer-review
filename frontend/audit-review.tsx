@@ -4,8 +4,12 @@ import { Contract, formatUnits, Interface, JsonRpcProvider, parseUnits } from "e
 import { ExternalLink, FileSearch, Loader2, RefreshCw, Shield } from "lucide-react";
 import "./index.css";
 import { Button } from "./components/Button";
+import { BaseNetworkBadge } from "./components/BaseNetworkBadge";
+import { LanguageToggle } from "./components/LanguageToggle";
+import { OCPHeaderBrand } from "./components/OCPHeaderBrand";
 import { WalletButton } from "./components/WalletButton";
 import { auditConfig, ERC20_ABI, FACTORY_ABI, VAULT_ABI } from "./config";
+import { extractPdfPages, parseChainGptPdfFindings, sha256Hex } from "./pdfAudit";
 import { useAuditWallet } from "./useAuditWallet";
 
 type Lang = "en" | "zh";
@@ -22,7 +26,8 @@ type VaultCard = {
   invalid: bigint;
 };
 
-const MAX_AUDIT_BYTES = 2_000_000;
+const MAX_TEXT_AUDIT_BYTES = 2_000_000;
+const MAX_PDF_AUDIT_BYTES = 20_000_000;
 const bytes = (v: string) => new TextEncoder().encode(v).length;
 const defaultDeadline = () => {
   const d = new Date(Date.now() + 60 * 60 * 1000);
@@ -33,8 +38,15 @@ const copy = {
     createTitle: "Open an audit dispute vault",
     subtitle:
       "Permissionless · Base Sepolia · Creation atomically posts the creator's NO review and at least 10 test USDC. Deadline only needs to be in the future.",
-    auditUrl: "Audit URL",
+    auditUrl: "Public audit URL",
     loadFindings: "Load findings",
+    formatsHelp: "Which report formats are supported?",
+    formatsUrl: "Source: a public HTTPS or ipfs:// URL that allows browser cross-origin reads.",
+    formatsPdf: "PDF: ChainGPT text-based reports with FND-, Severity, Description, Impact, and Remediation sections. Scanned/image-only PDFs are not supported.",
+    formatsText: "Markdown or plain text: numbered level 2–4 headings, such as ## Finding 1: Reentrancy or ### Issue #2 - Access Control.",
+    formatsLimits: "Limits: PDF up to 20 MB and 250 pages; text up to 2 MB. Other PDF layouts may require entering the disputed finding manually.",
+    authorizedReport: "Import only a public report that you are authorized to share. Private ChainGPT customer reports may have disclosure restrictions.",
+    reportHash: "PDF SHA-256",
     findingsFound: (n: number) => `${n} findings detected. Select the disputed one.`,
     findingLabel: "Finding label",
     disputedFinding: "Disputed finding",
@@ -66,8 +78,9 @@ const copy = {
       noUsdc: "Insufficient test USDC balance.",
       txFailed: "Create transaction failed.",
       badProtocol: "Only HTTPS or ipfs:// Audit URL is allowed",
-      tooLarge: "Report is larger than 2 MB and cannot be parsed automatically",
-      noMarkdown: "No numbered Markdown findings were detected",
+      tooLargeText: "Text report is larger than 2 MB and cannot be parsed automatically",
+      tooLargePdf: "PDF report is larger than 20 MB and cannot be parsed automatically",
+      noFindings: "No detailed ChainGPT PDF findings or numbered Markdown findings were detected",
       timeout: "Reading the report timed out. Please enter the finding manually.",
       corsSuffix: "If the report blocks cross-origin reads, enter it manually.",
       vaultList: "Failed to read vault list",
@@ -77,8 +90,15 @@ const copy = {
     createTitle: "开启审计争议 Vault",
     subtitle:
       "Permissionless · Base Sepolia · 创建交易原子提交 NO Review 并初押至少 10 测试 USDC。截止时间只要求晚于当前时间。",
-    auditUrl: "Audit URL",
+    auditUrl: "公开 Audit URL",
     loadFindings: "读取 Findings",
+    formatsHelp: "可以解析哪些审计文档？",
+    formatsUrl: "来源：允许浏览器跨域读取的公开 HTTPS 或 ipfs:// URL。",
+    formatsPdf: "PDF：带文字层的 ChainGPT 报告，Finding 需包含 FND-、Severity、Description、Impact 和 Remediation 分段；不支持扫描件或纯图片 PDF。",
+    formatsText: "Markdown 或纯文本：使用二至四级编号标题，例如 ## Finding 1: Reentrancy 或 ### Issue #2 - Access Control。",
+    formatsLimits: "限制：PDF 最大 20 MB、250 页；文本最大 2 MB。其他 PDF 版式可能需要手动填写争议 Finding。",
+    authorizedReport: "只导入公开且你有权分享的报告。ChainGPT 客户的私有报告可能受披露限制。",
+    reportHash: "PDF SHA-256",
     findingsFound: (n: number) => `已识别 ${n} 个 Findings，请选择争议项`,
     findingLabel: "Finding 标识",
     disputedFinding: "争议 Finding",
@@ -110,8 +130,9 @@ const copy = {
       noUsdc: "测试 USDC 余额不足。",
       txFailed: "创建交易失败",
       badProtocol: "只允许 HTTPS 或 ipfs:// Audit URL",
-      tooLarge: "报告超过 2 MB，不能自动解析",
-      noMarkdown: "没有识别到编号 Markdown Findings",
+      tooLargeText: "文本报告超过 2 MB，不能自动解析",
+      tooLargePdf: "PDF 报告超过 20 MB，不能自动解析",
+      noFindings: "没有识别到 ChainGPT 详细 PDF Finding 或编号 Markdown Finding",
       timeout: "读取报告超时，请手动填写 Finding。",
       corsSuffix: "如果报告禁止跨域读取，请手动填写。",
       vaultList: "Vault 列表读取失败",
@@ -160,17 +181,35 @@ function parseFindings(source: string): FindingOption[] {
   return found;
 }
 
-function LangToggle({ lang, setLang }: { lang: Lang; setLang: (v: Lang) => void }) {
-  return (
-    <div className="flex rounded-lg border bg-white p-1 text-xs">
-      <button className={`rounded-md px-3 py-1 ${lang === "en" ? "bg-slate-900 text-white" : "text-slate-500"}`} onClick={() => setLang("en")}>
-        EN
-      </button>
-      <button className={`rounded-md px-3 py-1 ${lang === "zh" ? "bg-slate-900 text-white" : "text-slate-500"}`} onClick={() => setLang("zh")}>
-        中文
-      </button>
-    </div>
-  );
+async function readLimitedResponse(response: Response, maxBytes: number, tooLargeMessage: string) {
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > maxBytes) throw new Error(tooLargeMessage);
+  if (!response.body) {
+    const data = new Uint8Array(await response.arrayBuffer());
+    if (data.byteLength > maxBytes) throw new Error(tooLargeMessage);
+    return data;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(tooLargeMessage);
+    }
+    chunks.push(value);
+  }
+  const data = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return data;
 }
 
 function App() {
@@ -192,9 +231,20 @@ function App() {
   const [options, setOptions] = useState<FindingOption[]>([]);
   const [loadingFindings, setLoadingFindings] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [reportHash, setReportHash] = useState("");
   const [vaults, setVaults] = useState<VaultCard[]>([]);
   const [vaultsLoading, setVaultsLoading] = useState(false);
   const [vaultsError, setVaultsError] = useState("");
+
+  async function importPdfData(data: Uint8Array) {
+    if (new TextDecoder().decode(data.subarray(0, 5)) !== "%PDF-") throw new Error("The selected file is not a valid PDF.");
+    const digest = await sha256Hex(data);
+    const pages = await extractPdfPages(data);
+    const parsed = parseChainGptPdfFindings(pages, digest, truncateUtf8);
+    if (!parsed.length) throw new Error(t.errors.noFindings);
+    setReportHash(digest);
+    setOptions(parsed);
+  }
 
   const loadVaults = useCallback(async () => {
     setVaultsLoading(true);
@@ -244,22 +294,30 @@ function App() {
   async function loadFindings() {
     setLoadingFindings(true);
     setLoadError("");
+    setReportHash("");
     setOptions([]);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15_000);
+    const timer = setTimeout(() => controller.abort(), 30_000);
     try {
-      const response = await fetch(fetchUrl(auditUrl, lang), {
+      const sourceUrl = fetchUrl(auditUrl, lang);
+      const response = await fetch(sourceUrl, {
         signal: controller.signal,
-        headers: { Accept: "text/markdown,text/plain;q=0.9,text/html;q=0.5" },
+        headers: { Accept: "application/pdf,text/markdown;q=0.9,text/plain;q=0.8,text/html;q=0.5" },
         credentials: "omit",
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const declared = Number(response.headers.get("content-length") || 0);
-      if (declared > MAX_AUDIT_BYTES) throw new Error(t.errors.tooLarge);
-      const source = await response.text();
-      if (bytes(source) > MAX_AUDIT_BYTES) throw new Error(t.errors.tooLarge);
-      const parsed = parseFindings(source);
-      if (!parsed.length) throw new Error(t.errors.noMarkdown);
+      const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+      const looksLikePdf = contentType.includes("application/pdf") || new URL(sourceUrl).pathname.toLowerCase().endsWith(".pdf");
+      let parsed: FindingOption[];
+      if (looksLikePdf) {
+        const data = await readLimitedResponse(response, MAX_PDF_AUDIT_BYTES, t.errors.tooLargePdf);
+        await importPdfData(data);
+        return;
+      } else {
+        const data = await readLimitedResponse(response, MAX_TEXT_AUDIT_BYTES, t.errors.tooLargeText);
+        parsed = parseFindings(new TextDecoder("utf-8", { fatal: false }).decode(data));
+      }
+      if (!parsed.length) throw new Error(t.errors.noFindings);
       setOptions(parsed);
     } catch (e) {
       setLoadError((e as Error).name === "AbortError" ? t.errors.timeout : `${(e as Error).message}. ${t.errors.corsSuffix}`);
@@ -280,7 +338,11 @@ function App() {
       return;
     }
     setError("");
-    if (!auditUrl.startsWith("https://") && !auditUrl.startsWith("ipfs://")) return setError(t.errors.badUrl);
+    try {
+      fetchUrl(auditUrl, lang);
+    } catch {
+      return setError(t.errors.badUrl);
+    }
     if (!finding.trim()) return setError(t.errors.noFinding);
     if (bytes(review) < 200 || bytes(review) > 4096) return setError(t.errors.reviewSize);
     const amount = parseUnits(stake, 6);
@@ -334,12 +396,22 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <nav className="border-b bg-white">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
-          <a href="/" className="font-display font-bold">OCP / AUDIT PEER REVIEW</a>
+      <nav className="sticky top-0 z-50 border-b border-border bg-white/80 backdrop-blur-sm">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <OCPHeaderBrand />
           <div className="flex items-center gap-3">
-            <LangToggle lang={lang} setLang={setLang} />
-            <WalletButton lang={lang} {...wallet} />
+            <BaseNetworkBadge connected={wallet.connected && wallet.onTargetNetwork} />
+            <LanguageToggle lang={lang} setLang={setLang} />
+            <WalletButton
+              lang={lang}
+              connected={wallet.connected}
+              address={wallet.address}
+              chainId={wallet.chainId}
+              onTargetNetwork={wallet.onTargetNetwork}
+              targetChainId={wallet.targetChainId}
+              onConnect={wallet.connectWallet}
+              onDisconnect={wallet.disconnectWallet}
+            />
           </div>
         </div>
       </nav>
@@ -349,13 +421,26 @@ function App() {
         <section className="mt-7 space-y-5 rounded-2xl border bg-white p-6 shadow-sm">
           <Field label={t.auditUrl}>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <input className="input" value={auditUrl} onChange={(e) => { setAuditUrl(e.target.value); setOptions([]); setLoadError(""); }} />
+              <input className="input" value={auditUrl} onChange={(e) => { setAuditUrl(e.target.value); setOptions([]); setReportHash(""); setLoadError(""); }} />
               <Button type="button" disabled={loadingFindings || !auditUrl.trim()} onClick={loadFindings} className="shrink-0">
                 {loadingFindings ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSearch className="h-4 w-4" />}
                 {t.loadFindings}
               </Button>
             </div>
           </Field>
+          <details className="group rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+            <summary className="cursor-pointer select-none font-semibold text-slate-700 marker:text-orange-500">
+              {t.formatsHelp}
+            </summary>
+            <ul className="mt-3 list-disc space-y-2 pl-5 leading-5">
+              <li>{t.formatsUrl}</li>
+              <li>{t.formatsPdf}</li>
+              <li>{t.formatsText}</li>
+              <li>{t.formatsLimits}</li>
+            </ul>
+          </details>
+          <div className="rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">{t.authorizedReport}</div>
+          {reportHash && <div className="break-all rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800"><b>{t.reportHash}:</b> <code>{reportHash}</code></div>}
           {loadError && <div className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">{loadError}</div>}
           {options.length > 0 && (
             <div className="rounded-xl border border-orange-200 bg-orange-50/40 p-4">

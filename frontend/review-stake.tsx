@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { Contract, JsonRpcProvider, formatUnits, getAddress, parseUnits, type EventLog } from "ethers";
+import { Contract, JsonRpcProvider, formatUnits, getAddress, parseUnits, type EventLog, type JsonRpcSigner } from "ethers";
 import { ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import "./index.css";
 import { Button } from "./components/Button";
+import { BaseNetworkBadge } from "./components/BaseNetworkBadge";
+import { LanguageToggle } from "./components/LanguageToggle";
+import { OCPHeaderBrand } from "./components/OCPHeaderBrand";
 import { WalletButton } from "./components/WalletButton";
 import { auditConfig, ERC20_ABI, FACTORY_ABI, VAULT_ABI } from "./config";
 import { useAuditWallet } from "./useAuditWallet";
@@ -19,6 +22,49 @@ const findingTitle = (v: string) => {
   const clean = line.replace(/[*`#_]/g, "").replace(/\s+/g, " ");
   return clean.length > 180 ? `${clean.slice(0, 177)}...` : clean;
 };
+
+async function assertTrustedVaultForSigning(signer: JsonRpcSigner, vaultAddress: string) {
+  const provider = signer.provider;
+  const factoryAddress = getAddress(auditConfig.factoryAddress);
+  const tokenAddress = getAddress(auditConfig.usdcAddress);
+  const trustedVaultAddress = getAddress(vaultAddress);
+
+  /*
+   * 安全边界：页面展示可以使用配置的只读 RPC，但授权和交易前的判断必须重新从
+   * 钱包 provider 读取。钱包 provider 才是用户即将签名并广播交易的那条链，不能
+   * 信任先前页面状态或另一个 RPC 返回的 isVault/factory/token 数据。
+   *
+   * 这相当于在签名前执行链下 modifier：链、Factory、Vault 字节码、注册关系、
+   * 官方 Token、Vault immutable 和协议版本必须同时匹配；任何一项失败都不得 approve。
+   */
+  const [network, factoryCode, vaultCode] = await Promise.all([
+    provider.getNetwork(),
+    provider.getCode(factoryAddress),
+    provider.getCode(trustedVaultAddress),
+  ]);
+  if (Number(network.chainId) !== auditConfig.chainId) throw new Error("Wallet is connected to the wrong network.");
+  if (factoryCode === "0x" || vaultCode === "0x") throw new Error("Wallet-side contract code verification failed.");
+
+  const factory = new Contract(factoryAddress, FACTORY_ABI, provider);
+  const vault = new Contract(trustedVaultAddress, VAULT_ABI, provider);
+  const [isRegistered, officialToken, reportedFactory, reportedToken, version] = await Promise.all([
+    factory.isVault(trustedVaultAddress),
+    factory.officialStakeToken(),
+    vault.factory(),
+    vault.stakeToken(),
+    vault.auditReviewVersion(),
+  ]);
+
+  if (
+    !isRegistered
+    || getAddress(String(officialToken)) !== tokenAddress
+    || getAddress(String(reportedFactory)) !== factoryAddress
+    || getAddress(String(reportedToken)) !== tokenAddress
+    || BigInt(version) !== 1n
+  ) {
+    throw new Error("Wallet-side Vault verification failed. No transaction was sent.");
+  }
+}
 
 const copy = {
   en: {
@@ -80,19 +126,6 @@ const copy = {
     },
   },
 };
-
-function LangToggle({ lang, setLang }: { lang: Lang; setLang: (v: Lang) => void }) {
-  return (
-    <div className="flex rounded-lg border bg-white p-1 text-xs">
-      <button className={`rounded-md px-3 py-1 ${lang === "en" ? "bg-slate-900 text-white" : "text-slate-500"}`} onClick={() => setLang("en")}>
-        EN
-      </button>
-      <button className={`rounded-md px-3 py-1 ${lang === "zh" ? "bg-slate-900 text-white" : "text-slate-500"}`} onClick={() => setLang("zh")}>
-        中文
-      </button>
-    </div>
-  );
-}
 
 function App() {
   const wallet = useAuditWallet();
@@ -219,6 +252,7 @@ function App() {
     setBusy(true);
     setError("");
     try {
+      await assertTrustedVaultForSigning(wallet.signer, vaultAddress);
       const v = new Contract(vaultAddress, VAULT_ABI, wallet.signer);
       if (kind === "stake") {
         const value = parseUnits(amount, 6);
@@ -245,12 +279,22 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <nav className="border-b bg-white">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
-          <a href="/audit-review.html" className="font-display font-bold">OCP / AUDIT PEER REVIEW</a>
+      <nav className="sticky top-0 z-50 border-b border-border bg-white/80 backdrop-blur-sm">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <OCPHeaderBrand />
           <div className="flex items-center gap-3">
-            <LangToggle lang={lang} setLang={setLang} />
-            <WalletButton lang={lang} {...wallet} />
+            <BaseNetworkBadge connected={wallet.connected && wallet.onTargetNetwork} />
+            <LanguageToggle lang={lang} setLang={setLang} />
+            <WalletButton
+              lang={lang}
+              connected={wallet.connected}
+              address={wallet.address}
+              chainId={wallet.chainId}
+              onTargetNetwork={wallet.onTargetNetwork}
+              targetChainId={wallet.targetChainId}
+              onConnect={wallet.connectWallet}
+              onDisconnect={wallet.disconnectWallet}
+            />
           </div>
         </div>
       </nav>

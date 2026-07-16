@@ -20,11 +20,10 @@ export function WalletButton(p: {
   if (p.connected && p.onTargetNetwork) {
     return (
       <div className="flex items-center gap-2">
-        <span className="hidden text-xs text-emerald-700 sm:inline">Base Sepolia</span>
-        <span className="rounded-lg border px-3 py-2 text-xs">
+        <span className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold shadow-sm">
           {p.address.slice(0, 6)}…{p.address.slice(-4)}
-          <button onClick={p.onDisconnect} title={p.lang === "zh" ? "断开连接" : "Disconnect"}>
-            <LogOut className="ml-1 inline h-3 w-3" />
+          <button className="ml-2 text-slate-500 hover:text-slate-900" onClick={p.onDisconnect} title={p.lang === "zh" ? "断开连接" : "Disconnect"}>
+            <LogOut className="inline h-4 w-4" />
           </button>
         </span>
       </div>
