@@ -17,6 +17,17 @@ contract FactoryTestUSDC is ERC20 {
     }
 }
 
+contract FeeFactoryTestUSDC is FactoryTestUSDC {
+    function _update(address from, address to, uint256 value) internal override {
+        if (from != address(0) && to != address(0) && value > 1) {
+            super._update(from, to, value - 1);
+            super._update(from, address(0), 1);
+        } else {
+            super._update(from, to, value);
+        }
+    }
+}
+
 contract AuditReviewVaultFactoryTest is Test {
     FactoryTestUSDC internal token;
     AuditReviewVaultFactory internal factory;
@@ -40,6 +51,7 @@ contract AuditReviewVaultFactoryTest is Test {
         vault = factory.createDispute(
             AuditReviewVaultFactory.CreateParams({
                 auditUrl: "https://example.com/audit",
+                auditHash: keccak256("audit-v1"),
                 findingLabel: "Finding #1",
                 finding: "A disputed security finding",
                 yesRule: "Finding is valid",
@@ -73,6 +85,9 @@ contract AuditReviewVaultFactoryTest is Test {
         assertEq(meta.creator, alice);
         assertEq(meta.findingLabel, "Finding #1");
         assertTrue(meta.claimHash != bytes32(0));
+        assertEq(meta.auditHash, keccak256("audit-v1"));
+        assertEq(factory.creationBlockOf(vaultAddress), block.number);
+        assertEq(factory.auditReviewFactoryVersion(), 2);
     }
 
     function test_duplicateClaimsAreAllowedAndIndexedSeparately() public {
@@ -111,6 +126,7 @@ contract AuditReviewVaultFactoryTest is Test {
         factory.createDispute(
             AuditReviewVaultFactory.CreateParams({
                 auditUrl: "https://example.com/audit",
+                auditHash: keccak256("audit-v1"),
                 findingLabel: "Finding #1",
                 finding: "Finding",
                 yesRule: "YES",
@@ -131,5 +147,70 @@ contract AuditReviewVaultFactoryTest is Test {
         vm.prank(alice);
         vm.expectRevert("Only factory");
         vault.bootstrapCreatorNo(alice, 10 * USDC, _review());
+    }
+
+    function test_auditHashAndPublicUrlAreRequired() public {
+        AuditReviewVaultFactory.CreateParams memory params = AuditReviewVaultFactory.CreateParams({
+            auditUrl: "http://example.com/audit",
+            auditHash: keccak256("audit-v1"),
+            findingLabel: "Finding #1",
+            finding: "Finding",
+            yesRule: "YES",
+            noRule: "NO",
+            invalidRule: "INVALID",
+            resolutionTime: block.timestamp + 1,
+            creatorReview: _review(),
+            initialNoStake: 10 * USDC
+        });
+        vm.prank(alice);
+        vm.expectRevert("Audit URL must be HTTPS or IPFS");
+        factory.createDispute(params);
+
+        params.auditUrl = "ipfs://bafy-test";
+        params.auditHash = bytes32(0);
+        vm.prank(alice);
+        vm.expectRevert("Audit hash required");
+        factory.createDispute(params);
+        assertEq(factory.vaultCount(), 0);
+    }
+
+    function test_feeOnTransferCreatorBootstrapRevertsWithoutRegistration() public {
+        FeeFactoryTestUSDC feeToken = new FeeFactoryTestUSDC();
+        AuditReviewVaultFactory feeFactory = new AuditReviewVaultFactory(address(feeToken), USDC, 10 * USDC);
+        feeToken.mint(alice, 100 * USDC);
+        vm.prank(alice);
+        feeToken.approve(address(feeFactory), type(uint256).max);
+
+        uint256 balanceBefore = feeToken.balanceOf(alice);
+        vm.prank(alice);
+        vm.expectRevert("Unexpected token transfer");
+        feeFactory.createDispute(
+            AuditReviewVaultFactory.CreateParams({
+                auditUrl: "https://example.com/audit",
+                auditHash: keccak256("audit-v1"),
+                findingLabel: "Finding #1",
+                finding: "Finding",
+                yesRule: "YES",
+                noRule: "NO",
+                invalidRule: "INVALID",
+                resolutionTime: block.timestamp + 1,
+                creatorReview: _review(),
+                initialNoStake: 10 * USDC
+            })
+        );
+        assertEq(feeFactory.vaultCount(), 0);
+        assertEq(feeToken.balanceOf(alice), balanceBefore);
+    }
+
+    function test_preFundedPredictedVaultDoesNotFakeCreatorDepositOrBlockCreation() public {
+        uint256 nonce = vm.getNonce(address(factory));
+        address predicted = vm.computeCreateAddress(address(factory), nonce);
+        token.mint(predicted, 1);
+
+        address created = _create(block.timestamp + 1, 10 * USDC);
+        assertEq(created, predicted);
+        AuditReviewVault createdVault = AuditReviewVault(created);
+        assertEq(createdVault.totalPrincipal(), 10 * USDC);
+        assertEq(token.balanceOf(created), 10 * USDC + 1);
     }
 }

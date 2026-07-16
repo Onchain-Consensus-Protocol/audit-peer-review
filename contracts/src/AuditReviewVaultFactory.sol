@@ -21,6 +21,7 @@ contract AuditReviewVaultFactory is ReentrancyGuard {
     struct DisputeMeta {
         address creator;
         bytes32 claimHash;
+        bytes32 auditHash;
         string auditUrl;
         string findingLabel;
         string finding;
@@ -31,6 +32,7 @@ contract AuditReviewVaultFactory is ReentrancyGuard {
 
     struct CreateParams {
         string auditUrl;
+        bytes32 auditHash;
         string findingLabel;
         string finding;
         string yesRule;
@@ -43,6 +45,7 @@ contract AuditReviewVaultFactory is ReentrancyGuard {
 
     address[] private _vaults;
     mapping(address => bool) public isVault;
+    mapping(address => uint256) public creationBlockOf;
     mapping(address => DisputeMeta) private _metaByVault;
 
     event AuditReviewVaultCreated(
@@ -63,15 +66,21 @@ contract AuditReviewVaultFactory is ReentrancyGuard {
         minCreatorNoStake = minCreatorNoStake_;
     }
 
+    function auditReviewFactoryVersion() external pure returns (uint256) {
+        return 2;
+    }
+
     function createDispute(CreateParams calldata params) external nonReentrant returns (address vaultAddr) {
         _validateMetadata(params);
+        // 评审窗口由创建者自行决定；协议只拒绝已经到期的 Vault。
         require(params.resolutionTime > block.timestamp, "Resolution time must be future");
         require(params.initialNoStake >= minCreatorNoStake, "Creator NO stake too low");
 
         bytes32 claimHash = keccak256(
             abi.encode(
-                uint256(1),
+                uint256(2),
                 params.auditUrl,
+                params.auditHash,
                 params.findingLabel,
                 params.finding,
                 params.yesRule,
@@ -83,14 +92,26 @@ contract AuditReviewVaultFactory is ReentrancyGuard {
             new AuditReviewVault(address(this), address(officialStakeToken), params.resolutionTime, minStake);
         vaultAddr = address(vault);
 
+        /*
+         * 新 Vault 的首笔资金也必须满足“实收金额 == 记账金额”。若官方 Token 配置错误、
+         * 带手续费或出现异常返回，Factory 会在注册 Vault 前整体回滚。
+         */
+        uint256 balanceBefore = officialStakeToken.balanceOf(vaultAddr);
         officialStakeToken.safeTransferFrom(msg.sender, vaultAddr, params.initialNoStake);
+        uint256 balanceAfter = officialStakeToken.balanceOf(vaultAddr);
+        require(
+            balanceAfter >= balanceBefore && balanceAfter - balanceBefore == params.initialNoStake,
+            "Unexpected token transfer"
+        );
         vault.bootstrapCreatorNo(msg.sender, params.initialNoStake, params.creatorReview);
 
         _vaults.push(vaultAddr);
         isVault[vaultAddr] = true;
+        creationBlockOf[vaultAddr] = block.number;
         _metaByVault[vaultAddr] = DisputeMeta({
             creator: msg.sender,
             claimHash: claimHash,
+            auditHash: params.auditHash,
             auditUrl: params.auditUrl,
             findingLabel: params.findingLabel,
             finding: params.finding,
@@ -116,6 +137,8 @@ contract AuditReviewVaultFactory is ReentrancyGuard {
 
     function _validateMetadata(CreateParams calldata params) private pure {
         _requireLength(params.auditUrl, 1, MAX_AUDIT_URL_BYTES, "Invalid audit URL length");
+        require(_hasAllowedAuditUrlScheme(params.auditUrl), "Audit URL must be HTTPS or IPFS");
+        require(params.auditHash != bytes32(0), "Audit hash required");
         _requireLength(params.findingLabel, 1, MAX_FINDING_LABEL_BYTES, "Invalid finding label length");
         _requireLength(params.finding, 1, MAX_FINDING_BYTES, "Invalid finding length");
         _requireLength(params.yesRule, 1, MAX_RULE_BYTES, "Invalid YES rule length");
@@ -126,5 +149,18 @@ contract AuditReviewVaultFactory is ReentrancyGuard {
     function _requireLength(string calldata value, uint256 min, uint256 max, string memory errorMessage) private pure {
         uint256 length = bytes(value).length;
         require(length >= min && length <= max, errorMessage);
+    }
+
+    function _hasAllowedAuditUrlScheme(string calldata value) private pure returns (bool) {
+        bytes calldata raw = bytes(value);
+        return _startsWith(raw, bytes("https://")) || _startsWith(raw, bytes("ipfs://"));
+    }
+
+    function _startsWith(bytes calldata value, bytes memory prefix) private pure returns (bool) {
+        if (value.length < prefix.length) return false;
+        for (uint256 i = 0; i < prefix.length; ++i) {
+            if (value[i] != prefix[i]) return false;
+        }
+        return true;
     }
 }

@@ -33,7 +33,7 @@ contract AuditReviewVault is ReentrancyGuard, IAuditReviewVault {
     }
 
     mapping(address => StakeInfo) private _stakeOf;
-    mapping(address => bool) private _claimed;
+    mapping(address => bool) public override claimed;
     mapping(address => bool) public override hasReview;
     mapping(address => bytes32) public override reviewHashOf;
     mapping(address => Side) private _reviewSideOf;
@@ -45,11 +45,14 @@ contract AuditReviewVault is ReentrancyGuard, IAuditReviewVault {
 
     bool public override resolved;
     Outcome public override outcome;
-    uint256 public remainingEligibleClaims;
-    uint256 public settlementPool;
+    uint256 public override remainingEligibleClaims;
+    uint256 public override settlementPool;
+    uint256 public override totalPaid;
 
     event Staked(address indexed user, Side indexed side, uint256 amount, uint256 totalAmount);
-    event Finalized(Outcome outcome, uint256 totalYes, uint256 totalNo, uint256 totalInvalid);
+    event Finalized(
+        Outcome outcome, uint256 totalYes, uint256 totalNo, uint256 totalInvalid, uint256 settlementPool
+    );
     event Withdrawn(address indexed user, uint256 payout);
 
     constructor(address factory_, address stakeToken_, uint256 resolutionTime_, uint256 minStake_) {
@@ -65,7 +68,7 @@ contract AuditReviewVault is ReentrancyGuard, IAuditReviewVault {
     }
 
     function auditReviewVersion() external pure override returns (uint256) {
-        return 1;
+        return 2;
     }
 
     function totalPrincipal() external view override returns (uint256) {
@@ -153,12 +156,12 @@ contract AuditReviewVault is ReentrancyGuard, IAuditReviewVault {
         settlementPool = stakeToken.balanceOf(address(this));
         remainingEligibleClaims =
             outcome == Outcome.INVALID ? _totalParticipants : _participantCountBySide[outcome == Outcome.YES ? 0 : 1];
-        emit Finalized(outcome, _totalStakeBySide[0], _totalStakeBySide[1], _totalStakeBySide[2]);
+        emit Finalized(outcome, _totalStakeBySide[0], _totalStakeBySide[1], _totalStakeBySide[2], settlementPool);
     }
 
     function withdraw() external override nonReentrant {
         require(resolved, "Not finalized");
-        require(!_claimed[msg.sender], "Already claimed");
+        require(!claimed[msg.sender], "Already claimed");
         StakeInfo storage info = _stakeOf[msg.sender];
         uint256 principal = _userPrincipal(info);
         require(principal > 0, "No stake");
@@ -166,18 +169,24 @@ contract AuditReviewVault is ReentrancyGuard, IAuditReviewVault {
         (Side userSide,) = sideOf(msg.sender);
         bool eligible = outcome == Outcome.INVALID || (outcome == Outcome.YES && userSide == Side.YES)
             || (outcome == Outcome.NO && userSide == Side.NO);
-        _claimed[msg.sender] = true;
+        claimed[msg.sender] = true;
 
         uint256 payout;
         if (eligible) {
             require(remainingEligibleClaims > 0, "No eligible claims");
             if (remainingEligibleClaims == 1) {
-                payout = stakeToken.balanceOf(address(this));
+                /*
+                 * 主网安全边界：终局后的结算只认 finalize 时冻结的 settlementPool。
+                 * 不能读取实时余额，否则第三方在终局后直接转入的 USDC 会被最后领取者
+                 * 带走，使实际 payout 总和超过链上声明的结算快照。
+                 */
+                payout = settlementPool - totalPaid;
             } else {
                 uint256 denominator =
                     outcome == Outcome.INVALID ? _totalPrincipal : _totalStakeBySide[outcome == Outcome.YES ? 0 : 1];
                 payout = Math.mulDiv(settlementPool, principal, denominator);
             }
+            totalPaid += payout;
             remainingEligibleClaims -= 1;
         }
         if (payout > 0) stakeToken.safeTransfer(msg.sender, payout);
@@ -189,7 +198,15 @@ contract AuditReviewVault is ReentrancyGuard, IAuditReviewVault {
         require(block.timestamp < resolutionTime, "Staking ended");
         require(amount >= minStake, "Amount below min stake");
 
+        /*
+         * SafeERC20 只保证调用没有失败，不保证 Vault 实际收到 amount。这里像合约记账前的
+         * balance invariant：只有余额增量与 calldata 中的 amount 完全一致，才允许把这笔
+         * 本金写入链上账本，避免收费型或异常 ERC20 用虚高名义金额买下结果。
+         */
+        uint256 balanceBefore = stakeToken.balanceOf(address(this));
         stakeToken.safeTransferFrom(user, address(this), amount);
+        uint256 balanceAfter = stakeToken.balanceOf(address(this));
+        require(balanceAfter >= balanceBefore && balanceAfter - balanceBefore == amount, "Unexpected token transfer");
         _recordStake(user, side, amount);
     }
 

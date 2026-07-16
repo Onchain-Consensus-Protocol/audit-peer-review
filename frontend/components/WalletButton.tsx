@@ -1,6 +1,7 @@
 import React from "react";
 import { AlertTriangle, LogOut, Wallet } from "lucide-react";
 import { Button } from "./Button";
+import { auditConfig } from "../config";
 
 export function WalletButton(p: {
   lang: "zh" | "en";
@@ -14,8 +15,8 @@ export function WalletButton(p: {
 }) {
   const text =
     p.lang === "zh"
-      ? { connect: "连接钱包", switch: "切换到 Base Sepolia" }
-      : { connect: "Connect wallet", switch: "Switch to Base Sepolia" };
+      ? { connect: "连接钱包", switch: `切换到 ${auditConfig.chainName}` }
+      : { connect: "Connect wallet", switch: `Switch to ${auditConfig.chainName}` };
 
   if (p.connected && p.onTargetNetwork) {
     return (
